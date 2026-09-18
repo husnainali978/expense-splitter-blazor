@@ -1,0 +1,91 @@
+@page "/groups/create"
+@using expense_splitter_blazor.Data
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<PageTitle>New Group</PageTitle>
+
+<h1>New group</h1>
+
+<EditForm Model="this" OnSubmit="CreateGroupAsync" class="col-md-6">
+    <div class="mb-3">
+        <label class="form-label">Group name</label>
+        <input class="form-control" placeholder="e.g. Trip to Lahore" @bind="groupName" @bind:event="oninput" />
+    </div>
+
+    <label class="form-label">Members</label>
+    @for (var i = 0; i < memberNames.Count; i++)
+    {
+        var index = i;
+        <div class="input-group mb-2">
+            <input class="form-control" placeholder="@($"Member {index + 1} name")"
+                   value="@memberNames[index]"
+                   @onchange="e => memberNames[index] = e.Value?.ToString() ?? string.Empty" />
+            <button type="button" class="btn btn-outline-danger" @onclick="() => RemoveMember(index)" disabled="@(memberNames.Count <= 1)">Remove</button>
+        </div>
+    }
+    <button type="button" class="btn btn-outline-secondary btn-sm mb-3" @onclick="AddMember">+ Add member</button>
+
+    @if (!string.IsNullOrEmpty(error))
+    {
+        <div class="alert alert-danger">@error</div>
+    }
+
+    <div>
+        <button class="btn btn-primary" type="submit">Create group</button>
+        <a class="btn btn-link" href="/">Cancel</a>
+    </div>
+</EditForm>
+
+@code {
+    private string groupName = string.Empty;
+    private List<string> memberNames = new() { "", "" };
+    private string? error;
+
+    private void AddMember() => memberNames.Add(string.Empty);
+
+    private void RemoveMember(int index)
+    {
+        if (memberNames.Count > 1)
+        {
+            memberNames.RemoveAt(index);
+        }
+    }
+
+    private async Task CreateGroupAsync()
+    {
+        var names = memberNames
+            .Select(n => n.Trim())
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (string.IsNullOrWhiteSpace(groupName))
+        {
+            error = "Group name is required.";
+            return;
+        }
+
+        if (names.Count == 0)
+        {
+            error = "Add at least one member.";
+            return;
+        }
+
+        error = null;
+
+        var group = new Group { Name = groupName.Trim() };
+        foreach (var name in names)
+        {
+            group.Members.Add(new Person { Name = name });
+        }
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        db.Groups.Add(group);
+        await db.SaveChangesAsync();
+
+        Nav.NavigateTo($"/groups/{group.Id}");
+    }
+}
