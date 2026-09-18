@@ -1,0 +1,102 @@
+@page "/groups/{GroupId:int}/balances"
+@using expense_splitter_blazor.Data
+@using expense_splitter_blazor.Services
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject BalanceService BalanceCalculator
+@rendermode InteractiveServer
+
+<PageTitle>Balances - @(group?.Name)</PageTitle>
+
+@if (notFound)
+{
+    <p class="text-danger">Group not found.</p>
+    <a class="btn btn-secondary" href="/">Back to groups</a>
+}
+else if (group is null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1>Balances: @group.Name</h1>
+        <a class="btn btn-outline-secondary" href="@($"/groups/{group.Id}")">Back to group</a>
+    </div>
+
+    <h4>Net balances</h4>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Person</th>
+                <th>Net</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var b in netBalances)
+            {
+                <tr>
+                    <td>@b.PersonName</td>
+                    <td class="@(b.NetAmount > 0 ? "text-success" : b.NetAmount < 0 ? "text-danger" : "")">
+                        @b.NetAmount.ToString("C")
+                    </td>
+                    <td class="text-muted">
+                        @(b.NetAmount > 0.004m ? "is owed" : b.NetAmount < -0.004m ? "owes" : "settled up")
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <h4 class="mt-4">Suggested settlements</h4>
+    <p class="text-muted">
+        Simplified so the fewest payments settle the group, instead of listing every
+        expense's individual debt (e.g. if A owes B and B owes C, this nets it down to
+        a single A &rarr; C payment).
+    </p>
+
+    @if (settlements.Count == 0)
+    {
+        <p>Everyone is settled up.</p>
+    }
+    else
+    {
+        <ul class="list-group">
+            @foreach (var s in settlements)
+            {
+                <li class="list-group-item">
+                    <strong>@s.FromPersonName</strong> pays <strong>@s.ToPersonName</strong>
+                    <span class="text-success">@s.Amount.ToString("C")</span>
+                </li>
+            }
+        </ul>
+    }
+}
+
+@code {
+    [Parameter] public int GroupId { get; set; }
+
+    private Group? group;
+    private bool notFound;
+    private IReadOnlyList<PersonBalance> netBalances = Array.Empty<PersonBalance>();
+    private IReadOnlyList<SettlementTransaction> settlements = Array.Empty<SettlementTransaction>();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        group = await db.Groups
+            .Include(g => g.Members)
+            .Include(g => g.Expenses).ThenInclude(e => e.Splits)
+            .FirstOrDefaultAsync(g => g.Id == GroupId);
+
+        if (group is null)
+        {
+            notFound = true;
+            return;
+        }
+
+        netBalances = BalanceCalculator.CalculateNetBalances(group);
+        settlements = BalanceCalculator.SimplifyDebts(netBalances);
+    }
+}
