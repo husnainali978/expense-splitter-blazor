@@ -1,0 +1,56 @@
+@page "/"
+@using expense_splitter_blazor.Data
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@rendermode InteractiveServer
+
+<PageTitle>Groups</PageTitle>
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1>Groups</h1>
+    <a class="btn btn-primary" href="/groups/create">+ New group</a>
+</div>
+
+@if (groups is null)
+{
+    <p><em>Loading...</em></p>
+}
+else if (groups.Count == 0)
+{
+    <p class="text-muted">No groups yet. Create one to start tracking shared expenses.</p>
+}
+else
+{
+    <div class="row row-cols-1 row-cols-md-2 g-3">
+        @foreach (var g in groups)
+        {
+            <div class="col">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">@g.Name</h5>
+                        <p class="card-text text-muted mb-1">
+                            @g.Members.Count member(s) &middot; @g.Expenses.Count expense(s)
+                        </p>
+                        <p class="card-text">Total spent: <strong>@g.Expenses.Sum(e => e.Amount).ToString("C")</strong></p>
+                        <a class="btn btn-outline-primary btn-sm" href="@($"/groups/{g.Id}")">Open</a>
+                        <a class="btn btn-outline-success btn-sm" href="@($"/groups/{g.Id}/balances")">Balances</a>
+                    </div>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private List<Group>? groups;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        groups = await db.Groups
+            .Include(g => g.Members)
+            .Include(g => g.Expenses)
+            .OrderByDescending(g => g.CreatedAtUtc)
+            .ToListAsync();
+    }
+}
