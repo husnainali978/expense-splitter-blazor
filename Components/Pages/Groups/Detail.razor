@@ -1,0 +1,301 @@
+@page "/groups/{GroupId:int}"
+@using expense_splitter_blazor.Data
+@using Microsoft.EntityFrameworkCore
+@inject IDbContextFactory<AppDbContext> DbFactory
+@rendermode InteractiveServer
+
+<PageTitle>@(group?.Name ?? "Group")</PageTitle>
+
+@if (notFound)
+{
+    <p class="text-danger">Group not found.</p>
+    <a class="btn btn-secondary" href="/">Back to groups</a>
+}
+else if (group is null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1>@group.Name</h1>
+        <a class="btn btn-success" href="@($"/groups/{group.Id}/balances")">View balances</a>
+    </div>
+
+    <div class="row">
+        <div class="col-md-4">
+            <h4>Members</h4>
+            <ul class="list-group mb-3">
+                @foreach (var m in group.Members)
+                {
+                    <li class="list-group-item">@m.Name</li>
+                }
+            </ul>
+
+            <EditForm Model="this" OnSubmit="AddMemberAsync" class="input-group mb-4">
+                <input class="form-control" placeholder="New member name" value="@newMemberName"
+                       @onchange="e => newMemberName = e.Value?.ToString() ?? string.Empty" />
+                <button class="btn btn-outline-primary" type="submit">Add</button>
+            </EditForm>
+
+            <h4>Add expense</h4>
+            <EditForm Model="this" OnSubmit="AddExpenseAsync">
+                <div class="mb-2">
+                    <label class="form-label">Description</label>
+                    <input class="form-control" value="@expenseDescription"
+                           @onchange="e => expenseDescription = e.Value?.ToString() ?? string.Empty" />
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Amount</label>
+                    <input type="number" step="0.01" min="0" class="form-control" value="@expenseAmount"
+                           @onchange="e => expenseAmount = ParseDecimal(e.Value)" />
+                </div>
+                <div class="mb-2">
+                    <label class="form-label">Paid by</label>
+                    <select class="form-select" value="@paidByPersonId"
+                            @onchange="e => paidByPersonId = ParseInt(e.Value)">
+                        @foreach (var m in group.Members)
+                        {
+                            <option value="@m.Id">@m.Name</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="mb-2">
+                    <label class="form-label d-block">Split</label>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="splitType" id="splitEqual"
+                               checked="@(splitType == SplitType.Equal)" @onchange="() => splitType = SplitType.Equal" />
+                        <label class="form-check-label" for="splitEqual">Equally</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="splitType" id="splitCustom"
+                               checked="@(splitType == SplitType.Custom)" @onchange="() => splitType = SplitType.Custom" />
+                        <label class="form-check-label" for="splitCustom">Custom amounts</label>
+                    </div>
+                </div>
+
+                <div class="mb-2">
+                    <label class="form-label">Participants</label>
+                    @foreach (var m in group.Members)
+                    {
+                        <div class="d-flex align-items-center gap-2 mb-1">
+                            <input class="form-check-input" type="checkbox" checked="@IsParticipating(m.Id)"
+                                   @onchange="e => SetParticipation(m.Id, e.Value)" />
+                            <span style="min-width:110px">@m.Name</span>
+                            @if (splitType == SplitType.Custom)
+                            {
+                                <input type="number" step="0.01" min="0" class="form-control form-control-sm" style="max-width:120px"
+                                       disabled="@(!IsParticipating(m.Id))"
+                                       value="@GetCustomAmount(m.Id)"
+                                       @onchange="e => customAmounts[m.Id] = ParseDecimal(e.Value)" />
+                            }
+                        </div>
+                    }
+                </div>
+
+                @if (!string.IsNullOrEmpty(expenseError))
+                {
+                    <div class="alert alert-danger">@expenseError</div>
+                }
+
+                <button class="btn btn-primary" type="submit">Add expense</button>
+            </EditForm>
+        </div>
+
+        <div class="col-md-8">
+            <h4>Expenses</h4>
+            @if (group.Expenses.Count == 0)
+            {
+                <p class="text-muted">No expenses yet.</p>
+            }
+            else
+            {
+                <table class="table table-striped align-middle">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Description</th>
+                            <th>Paid by</th>
+                            <th>Amount</th>
+                            <th>Split</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var e in group.Expenses.OrderByDescending(e => e.DateUtc))
+                        {
+                            <tr>
+                                <td>@e.DateUtc.ToLocalTime().ToString("d")</td>
+                                <td>@e.Description</td>
+                                <td>@e.PaidByPerson?.Name</td>
+                                <td>@e.Amount.ToString("C")</td>
+                                <td class="text-muted small">
+                                    @string.Join(", ", e.Splits.Select(s => $"{s.Person?.Name}: {s.Amount:C}"))
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public int GroupId { get; set; }
+
+    private Group? group;
+    private bool notFound;
+    private string newMemberName = string.Empty;
+
+    private string expenseDescription = string.Empty;
+    private decimal expenseAmount;
+    private int paidByPersonId;
+    private SplitType splitType = SplitType.Equal;
+    private string? expenseError;
+
+    private Dictionary<int, bool> participation = new();
+    private Dictionary<int, decimal> customAmounts = new();
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        group = await db.Groups
+            .Include(g => g.Members)
+            .Include(g => g.Expenses).ThenInclude(e => e.PaidByPerson)
+            .Include(g => g.Expenses).ThenInclude(e => e.Splits).ThenInclude(s => s.Person)
+            .FirstOrDefaultAsync(g => g.Id == GroupId);
+
+        if (group is null)
+        {
+            notFound = true;
+            return;
+        }
+
+        foreach (var m in group.Members)
+        {
+            if (!participation.ContainsKey(m.Id))
+            {
+                participation[m.Id] = true;
+            }
+
+            if (!customAmounts.ContainsKey(m.Id))
+            {
+                customAmounts[m.Id] = 0m;
+            }
+        }
+
+        if (paidByPersonId == 0 && group.Members.Count > 0)
+        {
+            paidByPersonId = group.Members[0].Id;
+        }
+    }
+
+    private bool IsParticipating(int personId) => participation.TryGetValue(personId, out var v) && v;
+
+    private decimal GetCustomAmount(int personId) => customAmounts.TryGetValue(personId, out var v) ? v : 0m;
+
+    private static decimal ParseDecimal(object? value) => decimal.TryParse(value?.ToString(), out var d) ? d : 0m;
+
+    private static int ParseInt(object? value) => int.TryParse(value?.ToString(), out var i) ? i : 0;
+
+    private void SetParticipation(int personId, object? value)
+    {
+        participation[personId] = value is bool b && b;
+    }
+
+    private async Task AddMemberAsync()
+    {
+        if (string.IsNullOrWhiteSpace(newMemberName) || group is null)
+        {
+            return;
+        }
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        db.People.Add(new Person { Name = newMemberName.Trim(), GroupId = group.Id });
+        await db.SaveChangesAsync();
+
+        newMemberName = string.Empty;
+        await LoadAsync();
+    }
+
+    private async Task AddExpenseAsync()
+    {
+        expenseError = null;
+
+        if (group is null)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(expenseDescription))
+        {
+            expenseError = "Description is required.";
+            return;
+        }
+
+        if (expenseAmount <= 0)
+        {
+            expenseError = "Amount must be greater than zero.";
+            return;
+        }
+
+        var participants = participation.Where(p => p.Value).Select(p => p.Key).ToList();
+        if (participants.Count == 0)
+        {
+            expenseError = "Select at least one participant.";
+            return;
+        }
+
+        var expense = new Expense
+        {
+            GroupId = group.Id,
+            Description = expenseDescription.Trim(),
+            Amount = expenseAmount,
+            PaidByPersonId = paidByPersonId,
+            SplitType = splitType,
+            DateUtc = DateTime.UtcNow
+        };
+
+        if (splitType == SplitType.Equal)
+        {
+            var share = Math.Round(expenseAmount / participants.Count, 2);
+            var remainder = Math.Round(expenseAmount - (share * participants.Count), 2);
+
+            for (var i = 0; i < participants.Count; i++)
+            {
+                var amount = share + (i == 0 ? remainder : 0m); // first participant absorbs rounding remainder
+                expense.Splits.Add(new ExpenseSplit { PersonId = participants[i], Amount = amount });
+            }
+        }
+        else
+        {
+            var sum = participants.Sum(GetCustomAmount);
+            if (Math.Abs(sum - expenseAmount) > 0.01m)
+            {
+                expenseError = $"Custom amounts must add up to the total ({expenseAmount:C}). They currently total {sum:C}.";
+                return;
+            }
+
+            foreach (var id in participants)
+            {
+                expense.Splits.Add(new ExpenseSplit { PersonId = id, Amount = GetCustomAmount(id) });
+            }
+        }
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+        db.Expenses.Add(expense);
+        await db.SaveChangesAsync();
+
+        expenseDescription = string.Empty;
+        expenseAmount = 0;
+        foreach (var key in customAmounts.Keys.ToList())
+        {
+            customAmounts[key] = 0m;
+        }
+
+        await LoadAsync();
+    }
+}
